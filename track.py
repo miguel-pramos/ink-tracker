@@ -2,7 +2,9 @@ import cv2
 import numpy as np
 import pandas as pd
 import math
+import argparse
 from typing import Any, List, Tuple, Optional
+import os
 
 
 class InkTrackAnalyzer:
@@ -354,9 +356,7 @@ class InkTrackAnalyzer:
         x_end = min(w_base, x_end)
         y_end = min(h_base, y_end)
 
-        current_base_frame_roi: np.ndarray = frame[
-            y_start:y_end, x_start:x_end
-        ].copy()
+        current_base_frame_roi: np.ndarray = frame[y_start:y_end, x_start:x_end].copy()
 
         # Passa o frame base CORTADO pela ROI para a calibração do threshold
         if not self._calibrate_threshold(current_base_frame_roi):
@@ -435,7 +435,6 @@ class InkTrackAnalyzer:
             current_radius_pixels: int = 0
             current_area_pixels_sq: float = 0
 
-
             # Cria uma cópia do cropped_frame para desenhar o círculo, mantendo o original para a visualização combinada
             frame_with_circle: np.ndarray = cropped_frame.copy()
 
@@ -462,11 +461,10 @@ class InkTrackAnalyzer:
 
             # Converte a área para unidades do mundo real
             real_world_area: float = (
-                current_area_pixels_sq / (self.pixels_per_unit ** 2)
+                current_area_pixels_sq / (self.pixels_per_unit**2)
                 if self.pixels_per_unit > 0
                 else 0
             )
-
 
             # O tempo é calculado a partir do frame 0
             time_in_seconds: float = actual_frame_count / fps
@@ -501,8 +499,8 @@ class InkTrackAnalyzer:
 
             cv2.putText(
                 combined_frame,
-                f"Area: {real_world_area:.2f} {self.unit_name}^2", # Texto para a área
-                (10, 180), # Posição abaixo do raio
+                f"Area: {real_world_area:.2f} {self.unit_name}^2",  # Texto para a área
+                (10, 180),  # Posição abaixo do raio
                 cv2.FONT_HERSHEY_SIMPLEX,
                 2,  # Tamanho da fonte ajustado para caber
                 (255, 255, 255),
@@ -522,12 +520,35 @@ class InkTrackAnalyzer:
 
     def save_data(self) -> None:
         df: pd.DataFrame = pd.DataFrame(
-            self.data, columns=["Tempo (s)", f"Raio ({self.unit_name})"]
+            self.data, columns=["Tempo (s)", f"Raio ({self.unit_name})", "Area ({self.unit_name}^2)"]
         )
         df.to_csv(self.output_csv_path, index=False)
         print(f"Dados salvos em: {self.output_csv_path}")
 
+def main(video_path: str, output_path: Optional[str] = None):
+    if output_path is None:
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join("data", base + '.csv')
+
+    analyzer = InkTrackAnalyzer(video_path, output_path)
+    analyzer.process()    
 
 if __name__ == "__main__":
-    analyzer = InkTrackAnalyzer("videos/15C.MOV", "data/15C.csv")
-    analyzer.process()
+    parser = argparse.ArgumentParser(
+        description="Análise automática do crescimento de mancha de tinta em vídeo."
+    )
+    parser.add_argument(
+        "--video",
+        type=str,
+        help="Caminho para o vídeo a ser analisado.",
+    )
+
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="Caminho para salvar o arquivo CSV de saída.",
+    )
+    args = parser.parse_args()
+
+    main(args.video, args.output)
+    
