@@ -1,0 +1,22 @@
+# Virtual environment
+.venv/
+venv/
+
+# Compiled Python bytecode
+__pycache__/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Log files
+*.log
+*.cache
+
+# VSCode 
+.vscode/
+
+# Project
+data/*
+videos/*
