@@ -31,8 +31,9 @@ uv sync
 1. Coloque o vídeo a ser analisado na pasta `videos/`.
 2. Execute o script principal:
     ```bash
-    uv run track.py
+    uv run track.py --video caminho/para/video
     ```
+    > 💡 **Dica:** Você pode passar a opção `--output caminho/pro/arquivo.csv` para definir o nome do arquivo de saída.
 3. Siga as instruções na tela para calibrar e processar o vídeo.
 4. Os resultados serão salvos em `data/` como um arquivo CSV.
 
