@@ -1,13 +1,31 @@
+import math
+import argparse
+import os
+
 import cv2
 import numpy as np
 import pandas as pd
-import math
-import argparse
+
 from typing import Any, List, Tuple, Optional
-import os
 
 
 class InkTrackAnalyzer:
+    """
+    Classe para análise automática do crescimento de uma mancha de tinta em vídeo.
+
+    Esta classe encapsula todas as funcionalidades necessárias para:
+    1. Carregar um vídeo.
+    2. Permitir que o usuário calibre a escala espacial usando uma régua no vídeo.
+    3. Permitir que o usuário selecione uma Região de Interesse (ROI) para análise.
+    4. Permitir que o usuário calibre um limiar (threshold) para segmentar a mancha de tinta.
+    5. Processar o vídeo frame a frame, detectando a mancha de tinta na ROI.
+    6. Calcular o raio e a área da mancha em cada frame.
+    7. Salvar os dados resultantes (tempo, raio, área) em um arquivo CSV.
+
+    A interação com o usuário para calibração é realizada através de janelas gráficas do OpenCV.
+    Os parâmetros de entrada e saída podem ser fornecidos via argumentos de linha de comando.
+    """
+
     def __init__(self, video_path: str, output_csv_path: str):
         self.video_path: str = video_path
         self.output_csv_path: str = output_csv_path
@@ -44,7 +62,7 @@ class InkTrackAnalyzer:
         )
 
         self.pixels_per_unit: float = 0.0
-        self.real_length: float = 100.0
+        self.real_length: float = 10.0
         self.unit_name: str = "mm"
         self.data: List[List[float]] = []
 
@@ -74,7 +92,28 @@ class InkTrackAnalyzer:
                         self.roi_selected = True  # ROI selecionada
         # Não há callback de mouse para a fase de threshold, pois usa trackbar
 
-    # Removido: _select_start_frame
+    def _show_message(
+        self,
+        message: str,
+        frame: np.ndarray,
+        y: int = 60,
+        color=(255, 255, 0),
+        font_scale=2,
+        thickness=3,
+    ):
+        """
+        Escreve uma mensagem sobre o frame, no topo, de forma persistente.
+        """
+        cv2.putText(
+            frame,
+            message,
+            (30, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
 
     def _calibrate_ruler(
         self, current_base_frame: np.ndarray, display_frame_for_drawing: np.ndarray
@@ -83,39 +122,25 @@ class InkTrackAnalyzer:
         Calibra a escala de pixels por unidade de medida real usando uma régua no frame base.
         Retorna True se a calibração for bem-sucedida, False caso contrário.
         """
-        self.calibration_stage = (
-            0  # Define a fase atual como calibração da régua (anteriormente 1)
-        )
-        self.drawing_points = []  # Reseta os pontos da régua
-        self.calibration_done = False  # Reseta o status de calibração da régua
+        self.calibration_stage = 0
+        self.drawing_points = []
+        self.calibration_done = False
 
-        print("\n--- FASE DE CALIBRAÇÃO (Régua) ---")
-        print(
-            f"1. Clique em dois pontos {f"que distem {self.real_length}{self.unit_name}" if self.real_length else ""} na régua visível no frame atual da janela 'Calibrar'."
-        )
-        print("2. Pressione 'q' para sair a qualquer momento durante a calibração.")
-        print(
-            "3. Após selecionar os dois pontos, a janela passará para a seleção da área de corte."
-        )
-
-        while not self.calibration_done:  # Loop para seleção dos pontos da régua
-            temp_display_frame: np.ndarray = (
-                current_base_frame.copy()
-            )  # Usa o frame base para desenhar
+        while not self.calibration_done:
+            temp_display_frame = current_base_frame.copy()
+            self._show_message(
+                "Clique em dois pontos da regua para calibrar a escala",
+                temp_display_frame,
+            )
             if len(self.drawing_points) == 1:
-                # Desenha o primeiro ponto selecionado em vermelho
                 cv2.circle(
                     temp_display_frame, self.drawing_points[0], 20, (0, 0, 255), -1
                 )
-
             cv2.imshow("Calibrar", temp_display_frame)
-
-            key: int = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
-                print("Calibração da régua cancelada pelo usuário.")
                 return False
 
-        # Desenha a linha entre os dois pontos e os pontos em vermelho no frame que acumula os desenhos
         cv2.line(
             display_frame_for_drawing,
             self.drawing_points[0],
@@ -129,41 +154,45 @@ class InkTrackAnalyzer:
         cv2.circle(
             display_frame_for_drawing, self.drawing_points[1], 20, (0, 0, 255), -1
         )
-
         cv2.imshow("Calibrar", display_frame_for_drawing)
-        cv2.waitKey(1)  # Pequeno delay para garantir que o desenho apareça
+        cv2.waitKey(1)
 
-        # Pontos da régua selecionados, agora obtém o comprimento real
-        p1: Tuple[int, int] = self.drawing_points[0]
-        p2: Tuple[int, int] = self.drawing_points[1]
-        pixel_distance: float = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+        p1 = self.drawing_points[0]
+        p2 = self.drawing_points[1]
+        pixel_distance = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
 
+        real_length = self.real_length
+        input_digits = []
         while True:
-            try:
-                real_length: float = (
-                    self.real_length
-                    if self.real_length
-                    else float(
-                        input(
-                            f"Digite o comprimento real da régua (em {self.unit_name}): "
-                        )
-                    )
-                )
-                if real_length <= 0:
-                    raise ValueError
-                break
-            except ValueError:
-                print(
-                    "Entrada inválida. Por favor, digite um número positivo para o comprimento real."
-                )
+            input_box = display_frame_for_drawing.copy()
+            self._show_message(
+                f"Digite o comprimento real da regua em {self.unit_name} e pressione ENTER: {''.join(map(str, input_digits))}",
+                input_box,
+            )
+            cv2.imshow("Calibrar", input_box)
 
+            key = cv2.waitKey(0)
+            
+            if key == 13:  # ENTER
+                try:
+                    real_length = float("".join(map(str, input_digits)))
+                    if real_length > 0:
+                        break
+                except Exception:
+                    pass
+
+            elif 48 <= key <= 57:  # 0-9
+                input_digits.append(key - 48)
+
+            elif key in (8, 127):  # BACKSPACE
+                if input_digits:
+                    input_digits.pop()
+
+            elif key == ord("q"):
+                return False
+
+        self.real_length = real_length
         self.pixels_per_unit = pixel_distance / real_length
-        print(
-            f"Calibração da régua concluída: {self.pixels_per_unit:.2f} pixels por {self.unit_name}."
-        )
-        print(
-            f"Isso significa que 1 {self.unit_name} equivale a {1/self.pixels_per_unit:.2f} pixels."
-        )
         return True
 
     def _select_roi(
@@ -173,58 +202,37 @@ class InkTrackAnalyzer:
         Permite ao usuário selecionar uma Região de Interesse (ROI) para análise.
         Retorna True se a seleção for bem-sucedida, False caso contrário.
         """
-        self.calibration_stage = (
-            1  # Transiciona para a fase de seleção da ROI (anteriormente 2)
-        )
-        self.roi_points = []  # Reseta os pontos da ROI
-        self.roi_selected = False  # Reseta o status de seleção da ROI
-
-        print("\n--- FASE DE CALIBRAÇÃO (Área de Corte - ROI) ---")
-        print(
-            "1. Clique no canto superior esquerdo e depois no canto inferior direito da área que deseja analisar."
-        )
-        print("2. Pressione 'q' para sair a qualquer momento.")
-        print(
-            "3. Após selecionar os dois pontos, a janela de calibração passará para a calibração do threshold."
-        )
-
-        while not self.roi_selected:  # Loop para seleção da ROI
-            temp_display_frame: np.ndarray = (
-                current_base_frame.copy()
-            )  # Usa o frame base para desenhar
+        self.calibration_stage = 1
+        self.roi_points = []
+        self.roi_selected = False
+        while not self.roi_selected:
+            temp_display_frame = current_base_frame.copy()
+            self._show_message(
+                "Selecione a ROI: clique no canto sup. esquerdo e inf. direito",
+                temp_display_frame,
+            )
             if len(self.roi_points) == 1:
-                # Desenha o primeiro ponto da ROI em amarelo
                 cv2.circle(
                     temp_display_frame, self.roi_points[0], 20, (0, 255, 255), -1
                 )
-
             cv2.imshow("Calibrar", temp_display_frame)
-            key: int = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
-                print("Seleção de ROI cancelada pelo usuário.")
                 return False
-
-        # Desenha o retângulo da ROI no frame que acumula os desenhos
         x1, y1 = self.roi_points[0]
         x2, y2 = self.roi_points[1]
         cv2.rectangle(display_frame_for_drawing, (x1, y1), (x2, y2), (0, 255, 255), 5)
         cv2.circle(display_frame_for_drawing, self.roi_points[0], 20, (0, 255, 255), -1)
         cv2.circle(display_frame_for_drawing, self.roi_points[1], 20, (0, 255, 255), -1)
-
+        self._show_message(
+            "ROI selecionada com sucesso!", display_frame_for_drawing, y=120
+        )
         cv2.imshow("Calibrar", display_frame_for_drawing)
-        cv2.waitKey(1)  # Pequeno delay para garantir que o desenho apareça
-
-        # Armazena as coordenadas da ROI (garante que x1 < x2 e y1 < y2)
-        x1, y1 = self.roi_points[0]
-        x2, y2 = self.roi_points[1]
+        cv2.waitKey(1)
         self.cropped_frame_offset_x = min(x1, x2)
         self.cropped_frame_offset_y = min(y1, y2)
         self.cropped_width = abs(x2 - x1)
         self.cropped_height = abs(y2 - y1)
-
-        print(
-            f"Área de corte (ROI) selecionada: ({self.cropped_frame_offset_x}, {self.cropped_frame_offset_y}) a ({self.cropped_frame_offset_x + self.cropped_width}, {self.cropped_frame_offset_y + self.cropped_height})"
-        )
         return True
 
     def _calibrate_threshold(self, current_base_frame_roi: np.ndarray) -> bool:
@@ -233,71 +241,49 @@ class InkTrackAnalyzer:
         usando o frame base já cortado pela ROI.
         Retorna True se a calibração for bem-sucedida, False caso contrário.
         """
-        self.calibration_stage = (
-            2  # Transiciona para a fase de calibração do threshold (anteriormente 3)
-        )
-        self.threshold_calibrated = False  # Reseta o status de calibração do threshold
-
-        # O frame para calibração do threshold é o frame base já cortado pela ROI
+        self.calibration_stage = 2
+        self.threshold_calibrated = False
         self.threshold_calibration_frame = current_base_frame_roi.copy()
-
         if (
             self.threshold_calibration_frame.shape[0] == 0
             or self.threshold_calibration_frame.shape[1] == 0
         ):
-            print(
-                "Erro: ROI vazia. Não é possível visualizar para calibração do threshold."
-            )
             return False
+        gray_roi = cv2.cvtColor(self.threshold_calibration_frame, cv2.COLOR_BGR2GRAY)
+        blurred_roi = cv2.GaussianBlur(gray_roi, (5, 5), 0)
 
-        gray_roi: np.ndarray = cv2.cvtColor(
-            self.threshold_calibration_frame, cv2.COLOR_BGR2GRAY
-        )
-        blurred_roi: np.ndarray = cv2.GaussianBlur(gray_roi, (5, 5), 0)
-
-        # Função de callback para o trackbar (não faz nada, apenas para o createTrackbar)
         def on_trackbar(val: int):
             pass
 
-        # Cria o trackbar na janela "Calibrar"
         cv2.createTrackbar("Threshold", "Calibrar", 0, 255, on_trackbar)
-        cv2.setTrackbarPos("Threshold", "Calibrar", 127)  # Valor inicial sugerido
-
-        print("\n--- FASE DE CALIBRAÇÃO (THRESHOLD) ---")
-        print(
-            "1. Ajuste o controle deslizante 'Threshold' na janela 'Calibrar' para binarizar a mancha de tinta corretamente."
-        )
-        print("2. Pressione ENTER para confirmar o valor do threshold e continuar.")
-        print("3. Pressione 'q' para sair a qualquer momento.")
-
+        cv2.setTrackbarPos("Threshold", "Calibrar", 127)
         while not self.threshold_calibrated:
-            threshold_val: int = cv2.getTrackbarPos("Threshold", "Calibrar")
+            threshold_val = cv2.getTrackbarPos("Threshold", "Calibrar")
             _, binary_roi = cv2.threshold(
                 blurred_roi, threshold_val, 255, cv2.THRESH_BINARY_INV
             )
-
-            # Combina a imagem original da ROI com a imagem binarizada para visualização
-            combined_threshold_display: np.ndarray = np.hstack(
+            combined_threshold_display = np.hstack(
                 (
                     self.threshold_calibration_frame,
                     cv2.cvtColor(binary_roi, cv2.COLOR_GRAY2BGR),
                 )
             )
-            cv2.imshow("Calibrar", combined_threshold_display)
+            self._show_message(
+                "Ajuste o limiar na barra e pressione ENTER",
+                combined_threshold_display,
+                y=60,
+            )
 
-            key: int = cv2.waitKey(1) & 0xFF
-            if key == 13:  # Tecla Enter
+            cv2.imshow("Calibrar", combined_threshold_display)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 13:  # ENTER
                 self.calibrated_threshold = threshold_val
                 self.threshold_calibrated = True
-                print(f"Threshold calibrado: {self.calibrated_threshold}")
-            elif key == ord("q"):
-                print("Calibração de threshold cancelada pelo usuário.")
-                return False
 
-        print(
-            "\nCalibração de threshold concluída. Pressione qualquer tecla para fechar a janela de calibração."
-        )
-        cv2.waitKey(0)  # Aguarda uma tecla para fechar a janela de calibração
+            elif key == ord("q"):
+                return False
+            
+        cv2.waitKey(500)
         return True
 
     def calibrate(self) -> bool:
@@ -519,36 +505,63 @@ class InkTrackAnalyzer:
         self.save_data()
 
     def save_data(self) -> None:
+        if not os.path.exists("data"):
+            os.mkdir("data")
+
         df: pd.DataFrame = pd.DataFrame(
-            self.data, columns=["Tempo (s)", f"Raio ({self.unit_name})", "Area ({self.unit_name}^2)"]
+            self.data,
+            columns=[
+                "tempo",
+                "raio",
+                "area",
+            ],
         )
         df.to_csv(self.output_csv_path, index=False)
         print(f"Dados salvos em: {self.output_csv_path}")
 
-def main(video_path: str, output_path: Optional[str] = None):
-    if output_path is None:
-        base = os.path.splitext(os.path.basename(video_path))[0]
-        output_path = os.path.join("data", base + '.csv')
 
-    analyzer = InkTrackAnalyzer(video_path, output_path)
-    analyzer.process()    
-
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="Análise automática do crescimento de mancha de tinta em vídeo."
     )
+
     parser.add_argument(
         "--video",
         type=str,
+        required=True,
         help="Caminho para o vídeo a ser analisado.",
     )
-
     parser.add_argument(
         "--output",
         type=str,
         help="Caminho para salvar o arquivo CSV de saída.",
     )
+    # Adiciona argumento opcional para unidade de medida
+    parser.add_argument(
+        "--unit",
+        type=str,
+        default="mm",
+        help="Unidade de medida (ex: mm, cm, px). Padrão: mm",
+    )
     args = parser.parse_args()
 
-    main(args.video, args.output)
-    
+    # Garante que o caminho de saída seja uma string válida
+    output_path = args.output if args.output else None
+    if output_path is None:
+        base = os.path.splitext(os.path.basename(args.video))[0]
+        output_dir = "data"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        output_path = os.path.join(output_dir, base + ".csv")
+
+    analyzer = InkTrackAnalyzer(args.video, output_path)
+    analyzer.unit_name = args.unit
+
+    try:
+        analyzer.process()
+    except Exception as e:
+        print(f"Erro inesperado durante o processamento: {e}")
+
+
+if __name__ == "__main__":
+    main()
