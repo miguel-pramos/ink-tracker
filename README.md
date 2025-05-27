@@ -53,4 +53,4 @@ uv sync
 
 ---
 
-Desenvolvido para fins acadêmicos na Unicamp.
+Desenvolvido para fins acadêmicos (disciplina F 359) na Unicamp.
